@@ -7,24 +7,38 @@ const UNEXPECTED_INPUT_PATTERN_ERROR = {
 };
 
 function createMockServer({ rules, ...config }) {
-  const routesFactory = rules.reduce((_routesFactory, { method, streamType, stream, input, output, error }) => {
-    const handlerFactory = _routesFactory.getHandlerFactory(method)
-      || _routesFactory.initHandlerFactory(method);
-    handlerFactory.addRule({ method, streamType, stream, input, output, error });
-    return _routesFactory;
-  }, new RoutesFactory());
-  const routes = routesFactory.generateRoutes();
   const grpcServer = createServer();
+  grpcServer.routes = new RoutesFactory();
 
-  grpcServer.getInteractionsOn = (method) => routes[method].interactions;
-  grpcServer.clearInteractions = () => Object.keys(routes).forEach(method => routes[method].interactions.length = 0);
+  grpcServer.getInteractionsOn = (method) => grpcServer.routes[method].interactions;
+  grpcServer.clearInteractions = () => Object.keys(grpcServer.routes).forEach(method => grpcServer.routes[method].interactions.length = 0);
 
-  return grpcServer.use({ ...config, routes });
+  grpcServer.addRule = ({ method, streamType, stream, input, output, error }) => {
+    const handlerFactory = grpcServer.routes.getOrInitHandlerFactory(method)
+    handlerFactory.addRule({ method, streamType, stream, input, output, error });
+  }
+
+  grpcServer.clearRules = (method) => {
+    const handler = grpcServer.routes.getOrInitHandlerFactory(method);
+    handler.rules.length = 0;
+    handler.interactions.length = 0;
+  }
+  grpcServer.clearAllRoutes = () => {
+    Object.keys(grpcServer.routes).forEach(grpcServer.clearRules);
+  }
+
+  rules.forEach(grpcServer.addRule)
+
+  return grpcServer.use({ ...config, routes: grpcServer.routes.generateRoutes() });
 }
 
 class RoutesFactory {
   constructor() {
     this.routebook = {};
+  }
+
+  getOrInitHandlerFactory(method) {
+    return this.getHandlerFactory(method) || this.initHandlerFactory(method);
   }
 
   getHandlerFactory(method) {
@@ -38,6 +52,8 @@ class RoutesFactory {
 
   generateRoutes() {
     return Object.entries(this.routebook).reduce((_routes, [method, handlerFactory]) => {
+      if (handlerFactory.locked) return _routes;
+      handlerFactory.locked = true;
       _routes[method] = handlerFactory.generateHandler();
       return _routes;
     }, {});
@@ -60,6 +76,7 @@ const prepareMetadata = error => {
 class HandlerFactory {
   constructor() {
     this.rules = [];
+    this.locked = false;
   }
 
   addRule(rule) {
@@ -115,7 +132,7 @@ class HandlerFactory {
           (function () {
             var done = false
             var dataStack = []
-            call.on('data', function (memo, data) {
+            call.on('data', async function (memo, data) {
               if (!done) {
                 memo.push(data);
                 dataStack.push(data)
@@ -135,7 +152,11 @@ class HandlerFactory {
                     response.data = dataStack;
                     done = true
                   } else {
-                    response.output = output;
+                    if (typeof output === 'function') {
+                      response.output = await output({ request: call.request });
+                    } else {
+                      response.output = output;
+                    }
                     response.active = response.active - 1;
                     response.data = dataStack;
                     done = true
@@ -173,7 +194,11 @@ class HandlerFactory {
               response.error = error;
             } else {
               response.data = dataStack;
-              response.output = stream;
+              if (typeof stream === 'function') {
+                response.output = stream({ request: call.request });
+              } else {
+                response.output = stream;
+              }
             }
           } else {
             response.data = dataStack;
@@ -224,7 +249,10 @@ class HandlerFactory {
                   call.emit('error', prepareMetadata(error));
                 } else if (haveLock && stream && stream[0] && !stream[0].input) {
                   interactions.push(data);
-                  const { output } = stream.shift();
+                  let { output } = stream.shift();
+                  if (typeof output === 'function') {
+                    output = output({ request: memo[0]});
+                  }
                   call.write(output);
                 } else if ((haveLock || !response.locked) && stream && stream[0] && isMatched(memo[0], stream[0].input)) {
                   interactions.push(data);
@@ -233,8 +261,11 @@ class HandlerFactory {
                     response.active = response.active - 1;
                     haveLock = true;
                   }
+                  let { output } = stream.shift();
+                  if (typeof output === 'function') {
+                    output = output({ request: memo[0]});
+                  }
                   memo.shift();
-                  const { output } = stream.shift();
                   if (output) {
                     call.write(output);
                   }
@@ -263,7 +294,11 @@ class HandlerFactory {
             if (error) {
               response.error = error;
             } else {
-              response.output = output;
+              if (typeof output === 'function') {
+                response.output = output({ request: call.request });
+              } else {
+                response.output = output;
+              }
             }
           }
           response.active = response.active - 1;
@@ -289,8 +324,11 @@ class HandlerFactory {
 }
 
 function isMatched(actual, expected) {
-  if (typeof expected === 'string') {
-    return JSON.stringify(actual).match(new RegExp(expected));
+  if (typeof expected.test === 'function') {
+    return expected.test(actual);
+  }
+  if (expected instanceof RegExp) {
+    return JSON.stringify(actual).match(expected);
   } else {
     if (process.env.GRPC_MOCK_COMPARE && process.env.GRPC_MOCK_COMPARE == "sparse") {
       return partial_compare(actual, expected);
