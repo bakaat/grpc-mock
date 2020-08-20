@@ -1,3 +1,4 @@
+const protobufjs = require('protobufjs')
 const { createServer } = require('grpc-kit');
 const { Metadata } = require('grpc');
 const partial_compare = require('partial-compare');
@@ -10,40 +11,43 @@ function createMockServer({ rules, ...config }) {
   const grpcServer = createServer();
   grpcServer.routes = new RoutesFactory();
 
-  grpcServer.getInteractionsOn = (method) => grpcServer.routes[method].interactions;
-  grpcServer.clearInteractions = () => Object.keys(grpcServer.routes).forEach(method => grpcServer.routes[method].interactions.length = 0);
+  // init routes and handlers for all methods defined in the proto
+  const serviceRoot = protobufjs.loadSync(config.protoPath)
+  methods = Object.keys(serviceRoot.lookupService(config.serviceName).methods)
+  methods.forEach((method) => grpcServer.routes.initHandlerFactory(method))
+
+  const routes = grpcServer.routes.generateRoutes()
+  grpcServer.use({ ...config, routes });
+
+  grpcServer.getInteractionsOn = (method) => routes[method].interactions;
+  grpcServer.clearInteractions = () => Object.keys(routes).forEach(method => routes[method].interactions.length = 0);
 
   grpcServer.addRule = ({ method, streamType, stream, input, output, error }) => {
-    const handlerFactory = grpcServer.routes.getOrInitHandlerFactory(method)
+    const handlerFactory = grpcServer.routes.getHandlerFactory(method)
     handlerFactory.addRule({ method, streamType, stream, input, output, error });
   }
 
   grpcServer.addRules = (rules) => {
-    rules.forEach(grpcServer.addRule)
-    return grpcServer.use({ ...config, routes: grpcServer.routes.generateRoutes() });
+    rules.forEach((rule) => grpcServer.addRule(rule))
   }
 
   grpcServer.clearRules = (method) => {
-    const handler = grpcServer.routes.getOrInitHandlerFactory(method);
+    const handler = grpcServer.routes.getHandlerFactory(method);
     handler.rules.length = 0;
-    handler.interactions.length = 0;
+    grpcServer.clearInteractions()
   }
+
   grpcServer.clearAllRules = () => {
-    Object.keys(grpcServer.routes).forEach(grpcServer.clearRules);
+    Object.keys(grpcServer.routes.routebook).forEach((method) => grpcServer.clearRules(method));
   }
+  grpcServer.addRules(rules)
 
-  rules.forEach(grpcServer.addRule)
-
-  return grpcServer.use({ ...config, routes: grpcServer.routes.generateRoutes() });
+  return grpcServer
 }
 
 class RoutesFactory {
   constructor() {
     this.routebook = {};
-  }
-
-  getOrInitHandlerFactory(method) {
-    return this.getHandlerFactory(method) || this.initHandlerFactory(method);
   }
 
   getHandlerFactory(method) {
@@ -57,8 +61,6 @@ class RoutesFactory {
 
   generateRoutes() {
     return Object.entries(this.routebook).reduce((_routes, [method, handlerFactory]) => {
-      if (handlerFactory.locked) return _routes;
-      handlerFactory.locked = true;
       _routes[method] = handlerFactory.generateHandler();
       return _routes;
     }, {});
@@ -81,7 +83,6 @@ const prepareMetadata = error => {
 class HandlerFactory {
   constructor() {
     this.rules = [];
-    this.locked = false;
   }
 
   addRule(rule) {
