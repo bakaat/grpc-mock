@@ -18,12 +18,17 @@ function createMockServer({ rules, ...config }) {
     handlerFactory.addRule({ method, streamType, stream, input, output, error });
   }
 
+  grpcServer.addRules = (rules) => {
+    rules.forEach(grpcServer.addRule)
+    return grpcServer.use({ ...config, routes: grpcServer.routes.generateRoutes() });
+  }
+
   grpcServer.clearRules = (method) => {
     const handler = grpcServer.routes.getOrInitHandlerFactory(method);
     handler.rules.length = 0;
     handler.interactions.length = 0;
   }
-  grpcServer.clearAllRoutes = () => {
+  grpcServer.clearAllRules = () => {
     Object.keys(grpcServer.routes).forEach(grpcServer.clearRules);
   }
 
