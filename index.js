@@ -159,7 +159,13 @@ class HandlerFactory {
                     done = true
                   } else {
                     if (typeof output === 'function') {
-                      response.output = await output({ request: call.request });
+                      try {
+                        const { res, err } = output({ request: call.request });
+                        if (err) response.error = err;
+                        else response.output = res;
+                      } catch (e) {
+                        response.error = UNEXPECTED_INPUT_PATTERN_ERROR;
+                      }
                     } else {
                       response.output = output;
                     }
@@ -201,7 +207,13 @@ class HandlerFactory {
             } else {
               response.data = dataStack;
               if (typeof stream === 'function') {
-                response.output = stream({ request: call.request });
+                try {
+                  const { res, err } = output({ request: call.request });
+                  if (err) response.error = err;
+                  else response.output = res;
+                } catch (e) {
+                  response.error = UNEXPECTED_INPUT_PATTERN_ERROR;
+                }
               } else {
                 response.output = stream;
               }
@@ -257,7 +269,13 @@ class HandlerFactory {
                   interactions.push(data);
                   let { output } = stream.shift();
                   if (typeof output === 'function') {
-                    output = output({ request: memo[0]});
+                    try {
+                      const { res, err } = output({ request: memo[0] });
+                      if (err) response.error = err;
+                      else response.output = res;
+                    } catch (e) {
+                      response.error = UNEXPECTED_INPUT_PATTERN_ERROR;
+                    }
                   }
                   call.write(output);
                 } else if ((haveLock || !response.locked) && stream && stream[0] && isMatched(memo[0], stream[0].input)) {
@@ -269,7 +287,13 @@ class HandlerFactory {
                   }
                   let { output } = stream.shift();
                   if (typeof output === 'function') {
-                    output = output({ request: memo[0]});
+                    try {
+                      const { res, err } = output({ request: memo[0] });
+                      if (err) response.error = err;
+                      else response.output = res;
+                    } catch (e) {
+                      response.error = UNEXPECTED_INPUT_PATTERN_ERROR;
+                    }
                   }
                   memo.shift();
                   if (output) {
@@ -301,7 +325,13 @@ class HandlerFactory {
               response.error = error;
             } else {
               if (typeof output === 'function') {
-                response.output = output({ request: call.request });
+                try {
+                  const { res, err } = output({ request: call.request });
+                  if (err) response.error = err;
+                  else response.output = res;
+                } catch (e) {
+                  response.error = UNEXPECTED_INPUT_PATTERN_ERROR;
+                }
               } else {
                 response.output = output;
               }
